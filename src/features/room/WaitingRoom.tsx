@@ -58,9 +58,18 @@ function CopyLink() {
 /* ──────────────────────────────────────────────
    Waiting Room — REST member list + WS updates
    ────────────────────────────────────────────── */
-export default function WaitingRoom() {
-  const { roomCode, matchSettings, accessToken, username, isMuted, logout, toggleReady } = useGameUI()
+interface WaitingRoomProps {
+  roomCode: string
+}
+
+export default function WaitingRoom({ roomCode }: WaitingRoomProps) {
+  const { setRoomCode, matchSettings, accessToken, username, isMuted, logout, toggleReady } = useGameUI()
   const navigate = useNavigate()
+
+  // Sync URL param → context (keeps context accurate for other views)
+  useEffect(() => {
+    if (roomCode && roomCode !== '----') setRoomCode(roomCode)
+  }, [roomCode, setRoomCode])
 
   // Real room WebSocket for live join/leave events
   const roomSocket = useRoomSocket(roomCode, accessToken)

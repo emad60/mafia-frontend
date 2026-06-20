@@ -93,11 +93,12 @@ function InGameHeader() {
 /* ──────────────────────────────────────────────
    In-game view — header + full session layout
    ────────────────────────────────────────────── */
-import { useParams } from '@tanstack/react-router'
+interface InGameViewProps {
+  sessionId: string
+}
 
-export function InGameView() {
+export function InGameView({ sessionId }: InGameViewProps) {
   const { currentPhase, roomCode } = useGameUI()
-  const { sessionId } = useParams({ from: '/game/$sessionId' })
 
   return (
     <div className="flex h-svh flex-col bg-[var(--color-background)]">

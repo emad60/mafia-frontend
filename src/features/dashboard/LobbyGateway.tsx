@@ -6,7 +6,7 @@ import { Play, LogIn, ArrowLeft } from 'lucide-react'
 import { motion } from 'motion/react'
 
 export default function LobbyGateway() {
-  const { accessToken, logout } = useGameUI()
+  const { accessToken, setRoomCode, logout } = useGameUI()
   const navigate = useNavigate()
 
   const [roomName, setRoomName] = useState('')
@@ -29,6 +29,7 @@ export default function LobbyGateway() {
         sessionStorage.setItem(`room_${res.room.code}_pid`, res.participant_id)
         sessionStorage.setItem(`room_${res.room.code}_ptoken`, res.token)
       }
+      setRoomCode(res.room.code)
       navigate({ to: '/room/$roomId', params: { roomId: res.room.code } })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create room')
@@ -49,6 +50,7 @@ export default function LobbyGateway() {
         sessionStorage.setItem(`room_${res.room.code}_pid`, res.participant_id)
         sessionStorage.setItem(`room_${res.room.code}_ptoken`, res.token)
       }
+      setRoomCode(res.room.code)
       navigate({ to: '/room/$roomId', params: { roomId: code } })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to join room')

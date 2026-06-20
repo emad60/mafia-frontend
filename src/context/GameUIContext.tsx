@@ -96,6 +96,8 @@ interface GameUIContextValue extends GameUIState {
   createRoom: () => string
   joinRoom: (code: string) => void
   startGame: () => string
+  /** Update room code after creating/joining via API */
+  setRoomCode: (code: string) => void
 
   /* auth */
   openAuthModal: (mode?: AuthMode) => void
@@ -205,6 +207,10 @@ export function GameUIProvider({ children }: { children: ReactNode }) {
     return sessionId
   }, [])
 
+  const setRoomCode = useCallback((code: string) => {
+    setState((prev) => ({ ...prev, roomCode: code }))
+  }, [])
+
   /* ── Auth ── */
   const openAuthModal = useCallback((mode: AuthMode = 'signin') => {
     setState((prev) => ({ ...prev, authModalOpen: true, authModalMode: mode }))
@@ -295,6 +301,7 @@ export function GameUIProvider({ children }: { children: ReactNode }) {
         createRoom,
         joinRoom,
         startGame,
+        setRoomCode,
         openAuthModal,
         closeAuthModal,
         login,
