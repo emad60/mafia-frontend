@@ -118,38 +118,60 @@ interface GameUIContextValue extends GameUIState {
   removePlayer: (playerId: string) => void
 }
 
+/* ── Session persistence keys ── */
+const STORAGE_KEY = 'mafia_session'
+
+function loadSession(): Partial<GameUIState> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (raw) {
+      const data = JSON.parse(raw)
+      return {
+        isAuthenticated: true,
+        accessToken: data.accessToken ?? null,
+        refreshToken: data.refreshToken ?? null,
+        username: data.username ?? null,
+      }
+    }
+  } catch { /* corrupted */ }
+  return {}
+}
+
+function saveSession(s: { accessToken: string | null; refreshToken: string | null; username: string | null }) {
+  if (s.accessToken) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(s))
+  } else {
+    localStorage.removeItem(STORAGE_KEY)
+  }
+}
+
 /* ── Defaults ── */
 const DEFAULT_STATE: GameUIState = {
   theme: 'dark',
-
   isAuthenticated: false,
   authModalOpen: false,
   authModalMode: 'signin',
   accessToken: null,
   refreshToken: null,
   username: null,
-
   currentPhase: 'night',
   roleAssignment: 'pending',
   isTransitioning: false,
-
   isMuted: false,
   isCameraOn: false,
-
   players: [],
   roomCode: '----',
-  matchSettings: {
-    anonymousVoting: true,
-    dayTimer: '3m',
-    nightTimer: '1m',
-  },
+  matchSettings: { anonymousVoting: true, dayTimer: '3m', nightTimer: '1m' },
 }
 
 const GameUIContext = createContext<GameUIContextValue | null>(null)
 
 /* ── Provider ── */
 export function GameUIProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<GameUIState>(DEFAULT_STATE)
+  const [state, setState] = useState<GameUIState>(() => ({
+    ...DEFAULT_STATE,
+    ...loadSession(),
+  }))
 
   /* ── Theme ── */
   const toggleTheme = useCallback(() => {
@@ -220,9 +242,11 @@ export function GameUIProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, authModalOpen: false }))
   }, [])
 
-  /** Real backend login */
+  /** Real backend login — persists session to localStorage */
   const login = useCallback(async (username: string, password: string): Promise<TokenResponse> => {
     const tokens = await api.login(username, password)
+    const session = { accessToken: tokens.access, refreshToken: tokens.refresh, username }
+    saveSession(session)
     setState((prev) => ({
       ...prev,
       isAuthenticated: true,
@@ -236,6 +260,8 @@ export function GameUIProvider({ children }: { children: ReactNode }) {
 
   /** Set tokens directly (Google SSO mock / rehydration) */
   const setTokens = useCallback((access: string, refresh: string, username: string) => {
+    const session = { accessToken: access, refreshToken: refresh, username }
+    saveSession(session)
     setState((prev) => ({
       ...prev,
       isAuthenticated: true,
@@ -247,6 +273,7 @@ export function GameUIProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const logout = useCallback(() => {
+    saveSession({ accessToken: null, refreshToken: null, username: null })
     setState((prev) => ({
       ...prev,
       isAuthenticated: false,
