@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useGameUI } from '../../context/GameUIContext'
 import { api } from '../../lib/api'
@@ -14,6 +14,7 @@ export default function LobbyGateway() {
   const [error, setError] = useState('')
   const [creating, setCreating] = useState(false)
   const [joining, setJoining] = useState(false)
+  const [pendingCode, setPendingCode] = useState<string | null>(null)
 
   const isAuth = !!accessToken
 
@@ -25,9 +26,13 @@ export default function LobbyGateway() {
     try {
       const res = await api.createRoom(roomName.trim(), 8, accessToken!)
       // Store participant credentials for future video chat
+      console.log('[LobbyGateway] Create response:', JSON.stringify({ code: res.room.code, hasPid: !!res.participant_id, hasToken: !!res.token }))
       if (res.participant_id && res.token) {
-        sessionStorage.setItem(`room_${res.room.code}_pid`, res.participant_id)
-        sessionStorage.setItem(`room_${res.room.code}_ptoken`, res.token)
+        localStorage.setItem(`room_${res.room.code}_pid`, res.participant_id)
+        localStorage.setItem(`room_${res.room.code}_ptoken`, res.token)
+        console.log('[LobbyGateway] Token stored in localStorage under key:', `room_${res.room.code}_ptoken`)
+      } else {
+        console.warn('[LobbyGateway] No participant credentials in response!', res)
       }
       setRoomCode(res.room.code)
       navigate({ to: '/room/$roomId', params: { roomId: res.room.code } })
@@ -46,12 +51,19 @@ export default function LobbyGateway() {
     setJoining(true)
     try {
       const res = await api.joinRoom(code, accessToken!)
-      if (res.participant_id && res.token) {
-        sessionStorage.setItem(`room_${res.room.code}_pid`, res.participant_id)
-        sessionStorage.setItem(`room_${res.room.code}_ptoken`, res.token)
+      if (res.room && res.participant_id && res.token) {
+        // Direct join — store credentials and navigate
+        localStorage.setItem(`room_${res.room.code}_pid`, res.participant_id)
+        localStorage.setItem(`room_${res.room.code}_ptoken`, res.token)
+        setRoomCode(res.room.code)
+        navigate({ to: '/room/$roomId', params: { roomId: code } })
+      } else if (res.request_id && res.status === 'pending') {
+        // Host approval needed — stay on dashboard, show pending
+        setPendingCode(code)
+        setError('')
+      } else {
+        setError('Unexpected response from server.')
       }
-      setRoomCode(res.room.code)
-      navigate({ to: '/room/$roomId', params: { roomId: code } })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to join room')
     } finally {
@@ -62,6 +74,26 @@ export default function LobbyGateway() {
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') handleJoin()
   }
+
+  // Poll join status while waiting for host approval
+  useEffect(() => {
+    if (!pendingCode || !isAuth) return
+    const poll = async () => {
+      try {
+        // Use credentials endpoint — returns 200 + token when member, 403 if not yet accepted
+        const creds = await api.getCredentials(pendingCode, accessToken!)
+        if (creds.participant_id && creds.token) {
+          localStorage.setItem(`room_${pendingCode}_pid`, creds.participant_id)
+          localStorage.setItem(`room_${pendingCode}_ptoken`, creds.token)
+          setRoomCode(pendingCode)
+          setPendingCode(null)
+          navigate({ to: '/room/$roomId', params: { roomId: pendingCode } })
+        }
+      } catch { /* 403 = not a member yet — keep polling */ }
+    }
+    const interval = setInterval(poll, 5000)
+    return () => clearInterval(interval)
+  }, [pendingCode, isAuth, accessToken, navigate, setRoomCode])
 
   const handleBack = () => { logout(); navigate({ to: '/' }) }
 
@@ -128,10 +160,26 @@ export default function LobbyGateway() {
             {error && <motion.p className="text-[11px] font-medium text-[var(--color-accent-crimson)]" initial={{ opacity: 0, y: -2 }} animate={{ opacity: 1, y: 0 }}>{error}</motion.p>}
           </div>
 
+          {/* Pending approval banner */}
+          {pendingCode && (
+            <div className="mt-5 rounded-xl border border-amber-400/20 bg-amber-400/5 px-4 py-4 text-center">
+              <p className="text-sm font-medium text-amber-400/90">Request sent — waiting for host</p>
+              <p className="mt-1 text-[11px] text-amber-400/70">Room {pendingCode}</p>
+              <div className="mt-3 flex items-center justify-center gap-2 text-[10px] text-amber-400/60">
+                <span className="h-3 w-3 animate-spin rounded-full border-2 border-amber-400/30 border-t-amber-400" />
+                Checking for approval…
+              </div>
+              <button onClick={() => setPendingCode(null)}
+                className="mt-3 text-[10px] text-[var(--text-muted)] underline underline-offset-2 hover:text-[var(--text-primary)]">
+                Cancel
+              </button>
+            </div>
+          )}
+
           {!isAuth && (
             <p className="mt-5 text-center text-[11px] leading-relaxed text-amber-400/80">Sign in to create or join a room.</p>
           )}
-          <p className="mt-3 text-center text-[11px] leading-relaxed text-[var(--text-muted)]">The host controls match settings. Guests need the room code.</p>
+          {!pendingCode && <p className="mt-3 text-center text-[11px] leading-relaxed text-[var(--text-muted)]">The host controls match settings. Guests need the room code.</p>}
         </motion.div>
       </main>
     </div>

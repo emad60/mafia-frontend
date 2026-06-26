@@ -1,6 +1,5 @@
-import { useNavigate } from '@tanstack/react-router'
 import { useGameUI, type GamePhase } from '../../context/GameUIContext'
-import { ThemeToggle } from '../../components/ThemeToggle'
+import { ThemeToggle, UserMenu } from '../../components'
 import GameSessionView from './components/GameSessionView'
 import { Moon, Sun, Vote, Trophy, Mic, MicOff, Video, VideoOff } from 'lucide-react'
 
@@ -19,7 +18,6 @@ const PHASE_META: Record<GamePhase, { icon: typeof Moon; label: string }> = {
    ────────────────────────────────────────────── */
 function InGameHeader() {
   const { currentPhase, setPhase, isTransitioning, isMuted, isCameraOn, toggleMute, toggleCamera, theme } = useGameUI()
-  const navigate = useNavigate()
   const phases: GamePhase[] = ['night', 'day', 'voting', 'results']
 
   return (
@@ -78,13 +76,7 @@ function InGameHeader() {
 
         {/* ── Theme Toggle ── */}
         <ThemeToggle />
-
-        <button
-          onClick={() => navigate({ to: '/' })}
-          className="ml-1 text-xs font-medium text-[var(--text-muted)] underline-offset-4 transition-colors hover:text-[var(--text-primary)] hover:underline"
-        >
-          Leave
-        </button>
+        <UserMenu />
       </div>
     </header>
   )

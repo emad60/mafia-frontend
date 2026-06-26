@@ -5,7 +5,8 @@ import { useRoomSocket } from '../game/hooks/useRoomSocket'
 import { useRealtimeKit } from '../game/hooks/useRealtimeKit'
 import { api } from '../../lib/api'
 import type { MemberListResponse } from '../../lib/api'
-import { Check, Link, Users, Shield, EyeOff, Clock, Play, ArrowLeft, MicOff, Radio } from 'lucide-react'
+import { Check, Link, Users, Shield, EyeOff, Clock, Play, ArrowLeft, MicOff, Mic, Video, VideoOff, Radio } from 'lucide-react'
+import { UserMenu } from '../../components'
 import { motion, AnimatePresence } from 'motion/react'
 
 function VideoFeed({ track, muted, label }: { track: MediaStreamTrack; muted: boolean; label: string }) {
@@ -98,51 +99,46 @@ export default function WaitingRoom({ roomCode }: WaitingRoomProps) {
     if (roomCode && roomCode !== '----') setRoomCode(roomCode)
   }, [roomCode, setRoomCode])
 
-  // WebSocket — auto-connects via useEffect inside the hook
+  // WebSocket — auto-connects, receives room_state on connect
   const roomSocket = useRoomSocket(roomCode, accessToken)
   const useReal = !!(accessToken && roomSocket.isConnected)
 
-  // RealtimeKit video/audio
-  const rt = useRealtimeKit(roomCode)
+  // Use WS room_state data when available (preferred), REST as fallback
+  const wsMembers = useMemo(() =>
+    roomSocket.members.map((m) => ({
+      id: String(m.user_id), name: m.username,
+      isHost: m.isHost || m.user_id === roomSocket.hostId, isReady: m.isReady,
+    })),
+  [roomSocket.members, roomSocket.hostId])
 
-  // Debug: log video state
-  useEffect(() => {
-    console.log('[WaitingRoom] RTK state:', { isJoined: rt.isJoined, isJoining: rt.isJoining, participants: rt.participants.size, localParticipant: rt.localParticipant?.name, localVideoTrack: !!rt.localParticipant?.videoTrack, error: rt.error })
-    if (rt.participants.size > 0) {
-      rt.participants.forEach((p) => console.log(`  [${p.name}] video=${!!p.videoTrack} audio=${!!p.audioTrack} videoEnabled=${p.videoEnabled}`))
-    }
-  }, [rt.isJoined, rt.isJoining, rt.participants, rt.localParticipant, rt.error])
-
-  // Map RealtimeKit participants to video tracks by name
-  const trackByName = useMemo(() => {
-    const map = new Map<string, MediaStreamTrack>()
-    if (!rt.isJoined) return map
-    for (const [, p] of rt.participants) {
-      if (p.videoTrack) map.set(p.name, p.videoTrack)
-    }
-    console.log('[WaitingRoom] trackByName:', Array.from(map.keys()))
-    return map
-  }, [rt.isJoined, rt.participants])
-
-  // REST: fetch member list
+  // REST: fetch member list (fallback). Wait for WS room_state first
+  // to avoid race condition where REST fires before WS add_member commits.
   const [restMembers, setRestMembers] = useState<MemberListResponse | null>(null)
   const [fetchError, setFetchError] = useState<string | null>(null)
+  const wsReady = roomSocket.members.length > 0
 
   const fetchMembers = useCallback(async () => {
     if (!accessToken || !roomCode || roomCode === '----') return
+    // Skip REST if WS already gave us room_state
+    if (wsReady) return
+    // Also skip until WS is actually connected (avoids pre-add_member race)
+    if (!roomSocket.isConnected) return
     try {
       const data = await api.getMembers(roomCode, accessToken)
       setRestMembers(data)
       setFetchError(null)
     } catch (err) {
-      setFetchError(err instanceof Error ? err.message : 'Failed to load members')
+      if (!(err instanceof Error && err.message.includes('403'))) {
+        setFetchError(err instanceof Error ? err.message : 'Failed to load members')
+      }
     }
-  }, [accessToken, roomCode])
+  }, [accessToken, roomCode, wsReady, roomSocket.isConnected])
 
   useEffect(() => { fetchMembers() }, [fetchMembers])
 
-  // Build player list
+  // Build player list: prefer WS room_state, fall back to REST, then mock
   const rawPlayers = useMemo(() => {
+    if (wsMembers.length > 0) return wsMembers
     if (restMembers) {
       return restMembers.members.map((m) => ({
         id: String(m.id), name: m.username,
@@ -154,13 +150,79 @@ export default function WaitingRoom({ roomCode }: WaitingRoomProps) {
       { id: 'p-2', name: 'Marco', isHost: false, isReady: false },
       { id: 'p-3', name: 'Elena', isHost: false, isReady: true },
     ]
-  }, [restMembers, username])
+  }, [wsMembers, restMembers, username])
 
-  const loggedInUserId = restMembers?.host?.id
+  // When the token appears (after create/join API call or page refresh),
+  // bump this counter so useRealtimeKit re-runs its effect.
+  const [tokenReady, setTokenReady] = useState(0)
+  const tokenKey = `room_${roomCode}_ptoken`
+
+  // On mount: try to obtain a participant token for video.
+  // 1. Check localStorage (survives refresh)
+  // 2. Try GET /credentials/ (works for existing room members)
+  // 3. Fall back to POST /join/ (works if not yet a member)
+  useEffect(() => {
+    if (!accessToken || !roomCode || roomCode === '----') return
+    if (localStorage.getItem(tokenKey)) {
+      setTokenReady(1)
+      return
+    }
+    // Wait for WS to connect and add us as a member before trying REST
+    if (!roomSocket.isConnected) return
+    const getToken = async () => {
+      try {
+        const creds = await api.getCredentials(roomCode, accessToken)
+        localStorage.setItem(`room_${roomCode}_pid`, creds.participant_id)
+        localStorage.setItem(tokenKey, creds.token)
+        setTokenReady((n) => n + 1)
+      } catch {
+        try {
+          const res = await api.joinRoom(roomCode, accessToken)
+          if (res.participant_id && res.token) {
+            localStorage.setItem(`room_${roomCode}_pid`, res.participant_id)
+            localStorage.setItem(tokenKey, res.token)
+            setTokenReady((n) => n + 1)
+          }
+        } catch { /* retry later */ }
+      }
+    }
+    getToken()
+  }, [roomCode, accessToken, tokenKey, roomSocket.isConnected])
+
+  // RealtimeKit video/audio — re-runs when token becomes available
+  const rt = useRealtimeKit(roomCode, tokenReady > 0 ? tokenReady : undefined)
+
+  // Map RealtimeKit participants to video tracks.
+  const trackByName = useMemo(() => {
+    const map = new Map<string, MediaStreamTrack>()
+    if (!rt.isJoined) return map
+    console.log('[trackByName] RTK participants:', Array.from(rt.participants.entries()).map(([id, p]) => ({ id, name: p.name, hasVideo: !!p.videoTrack, isLocal: p.isLocal })))
+    console.log('[trackByName] Player names:', rawPlayers.map(p => p.name))
+    for (const [, p] of rt.participants) {
+      if (p.videoTrack) {
+        // Index by exact name, lowercase, and also by isLocal flag
+        map.set(p.name, p.videoTrack)
+        map.set(p.name.trim().toLowerCase(), p.videoTrack)
+        if (p.isLocal && rawPlayers.length > 0) {
+          map.set(rawPlayers[0].name, p.videoTrack)
+        }
+      }
+    }
+    console.log('[trackByName] Final map keys:', Array.from(map.keys()))
+    return map
+  }, [rt.isJoined, rt.participants, rt.localParticipant, rawPlayers])
+
+  // Determine if current user is host by matching our username against the WS member list
+  const isHost = useMemo(() => {
+    if (roomSocket.hostUsername && username && roomSocket.hostUsername === username) return true
+    if (roomSocket.members.length === 0 && !restMembers) return rawPlayers[0]?.isHost ?? false
+    return false
+  }, [roomSocket.hostUsername, username, roomSocket.members.length, restMembers, rawPlayers])
+  // Which player in the list is us (for self-indicator)
+  const myName = username
   const currentPlayer = rawPlayers[0]
-  const isHost = currentPlayer?.isHost ?? true
-  const playerCount = restMembers?.member_count ?? rawPlayers.length
-  const maxMembers = restMembers?.max_members ?? 8
+  const playerCount = roomSocket.memberCount || restMembers?.member_count || rawPlayers.length
+  const maxMembers = roomSocket.maxMembers || restMembers?.max_members || 8
   const MIN_PLAYERS = 5
   const thresholdMet = playerCount >= MIN_PLAYERS
 
@@ -175,6 +237,50 @@ export default function WaitingRoom({ roomCode }: WaitingRoomProps) {
       navigate({ to: '/game/$sessionId', params: { sessionId: String(roomSocket.sessionId) } })
     }
   }, [roomSocket.sessionId, navigate])
+
+  // Join requests (host only)
+  const [joinReqs, setJoinReqs] = useState<{ id: number; user_id: number; username: string; requested_at?: string }[]>([])
+  const [joinReqsLoading, setJoinReqsLoading] = useState(false)
+
+  const fetchJoinRequests = useCallback(async () => {
+    if (!accessToken || !roomCode || roomCode === '----') return
+    try {
+      const rest = await api.getJoinRequests(roomCode, accessToken)
+      setJoinReqs(rest.results)
+    } catch { /* only host can see these — 403 means we're not host */ }
+  }, [accessToken, roomCode])
+
+  // Fetch join requests on connect and poll every 5s for host ONLY
+  useEffect(() => {
+    if (!roomSocket.isConnected || !isHost) return
+    fetchJoinRequests()
+    const interval = setInterval(fetchJoinRequests, 5000)
+    return () => clearInterval(interval)
+  }, [roomSocket.isConnected, isHost, fetchJoinRequests])
+
+  // Merge WS join_request_received events and trigger REST refresh
+  useEffect(() => {
+    if (roomSocket.joinRequests.length > 0) {
+      fetchJoinRequests()  // refresh the full list from REST
+    }
+  }, [roomSocket.joinRequests, fetchJoinRequests])
+
+  const handleAccept = async (requestId: number) => {
+    if (!accessToken || !roomCode) return
+    try {
+      await api.acceptJoinRequest(roomCode, requestId, accessToken)
+      setJoinReqs(prev => prev.filter(r => r.id !== requestId))
+      fetchMembers() // refresh member list
+    } catch { /* */ }
+  }
+
+  const handleReject = async (requestId: number) => {
+    if (!accessToken || !roomCode) return
+    try {
+      await api.rejectJoinRequest(roomCode, requestId, accessToken)
+      setJoinReqs(prev => prev.filter(r => r.id !== requestId))
+    } catch { /* */ }
+  }
 
   const handleStartGame = () => {
     if (useReal) { roomSocket.startGame() }
@@ -199,8 +305,43 @@ export default function WaitingRoom({ roomCode }: WaitingRoomProps) {
           {fetchError && <span className="rounded-full bg-amber-400/10 px-2 py-0.5 text-[10px] font-medium text-amber-400/80">REST offline</span>}
           {rt.error && <span className="rounded-full bg-[var(--color-accent-crimson)]/10 px-2 py-0.5 text-[10px] font-medium text-[var(--color-accent-crimson)]">Video: {rt.error}</span>}
         </div>
-        <button onClick={handleLeave} className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--text-muted)] underline-offset-4 transition-colors hover:text-[var(--text-primary)] hover:underline"><ArrowLeft size={13} />Leave</button>
+        <div className="flex items-center gap-2">
+          {/* Mic */}
+          <button onClick={rt.toggleMute}
+            className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-all duration-200 ${rt.isMuted ? 'bg-[var(--color-accent-crimson)]/15 text-[var(--color-accent-crimson)]' : 'bg-[var(--color-surface)] text-[var(--text-muted)] hover:text-[var(--text-primary)]'}`}>
+            {rt.isMuted ? <MicOff size={14} /> : <Mic size={14} />}
+            {rt.isMuted ? 'Muted' : 'Mic'}
+          </button>
+          {/* Camera */}
+          <button onClick={rt.toggleCamera}
+            className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-all duration-200 ${rt.isCameraOff ? 'bg-[var(--color-accent-crimson)]/15 text-[var(--color-accent-crimson)]' : 'bg-[var(--color-surface)] text-[var(--text-muted)] hover:text-[var(--text-primary)]'}`}>
+            {rt.isCameraOff ? <VideoOff size={14} /> : <Video size={14} />}
+            {rt.isCameraOff ? 'Off' : 'Cam'}
+          </button>
+          <UserMenu />
+          <button onClick={handleLeave} className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--text-muted)] underline-offset-4 transition-colors hover:text-[var(--text-primary)] hover:underline"><ArrowLeft size={13} />Back</button>
+        </div>
       </header>
+
+      {/* Guest waiting for approval — no members yet, WS not connected */}
+      {!isHost && wsMembers.length === 0 && !roomSocket.isConnected && (
+        <div className="mx-6 mt-4 rounded-xl border border-amber-400/20 bg-amber-400/5 px-5 py-4 text-center">
+          <p className="text-sm font-medium text-amber-400/90">Waiting for host approval</p>
+          <p className="mt-1 text-[11px] leading-relaxed text-[var(--text-muted)]">
+            Your request has been sent. Once the host accepts, you&rsquo;ll join the room automatically.
+          </p>
+            <div className="mt-3 flex items-center justify-center gap-2">
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-amber-400/30 border-t-amber-400" />
+              <span className="text-[10px] text-amber-400/70">Checking for approval…</span>
+            </div>
+        </div>
+      )}
+      {/* Generic error banner for other issues */}
+      {!isHost && wsMembers.length === 0 && roomSocket.error && roomSocket.error !== 'Join via invite code first' && !roomSocket.isConnected && (
+        <div className="mx-6 mt-4 rounded-xl border border-[var(--color-accent-crimson)]/20 bg-[var(--color-accent-crimson)]/5 px-5 py-4 text-center">
+          <p className="text-sm font-medium text-[var(--color-accent-crimson)]">{roomSocket.error}</p>
+        </div>
+      )}
 
       <main className="flex flex-1 items-stretch overflow-hidden">
         <div className="flex w-full flex-col gap-0 lg:flex-row">
@@ -213,7 +354,7 @@ export default function WaitingRoom({ roomCode }: WaitingRoomProps) {
             </div>
             <div className={`grid flex-1 gap-3 p-4 ${gridCols} auto-rows-fr content-center overflow-y-auto`}>
               {rawPlayers.map((p) => (
-                <WaitingCard key={p.id} name={p.name} isHost={p.isHost} isSelf={p.id === String(loggedInUserId ?? 'host-1')} isReady={p.isReady} isMuted={p.id !== String(loggedInUserId ?? 'host-1')} videoTrack={trackByName.get(p.name) ?? null} trackLabel={p.name} />
+                <WaitingCard key={p.id} name={p.name} isHost={p.isHost} isSelf={myName ? p.name === myName : p.id === rawPlayers[0]?.id} isReady={p.isReady} isMuted={myName ? p.name !== myName : p.id !== rawPlayers[0]?.id} videoTrack={trackByName.get(p.name) ?? null} trackLabel={p.name} />
               ))}
               {rawPlayers.length === 0 && (
                 <div className="col-span-full flex flex-col items-center justify-center gap-3 text-center">
@@ -225,6 +366,32 @@ export default function WaitingRoom({ roomCode }: WaitingRoomProps) {
           </section>
 
           <section className="flex w-full flex-col gap-6 lg:w-[360px] lg:shrink-0 p-6">
+            {/* Join requests — host only */}
+            {isHost && joinReqs.length > 0 && (
+              <div className="rounded-2xl border border-amber-400/20 bg-[var(--color-surface)]/40 p-5">
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-amber-400" />
+                  <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-amber-400/90">Join Requests ({joinReqs.length})</h4>
+                </div>
+                <div className="flex flex-col gap-2">
+                  {joinReqs.map((r) => (
+                    <div key={r.id} className="flex items-center justify-between rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-raised)] px-3 py-2">
+                      <span className="text-xs font-medium text-[var(--text-primary)]">{r.username}</span>
+                      <div className="flex items-center gap-1.5">
+                        <button onClick={() => handleAccept(r.id)}
+                          className="rounded-lg bg-emerald-400/15 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-emerald-400 transition-colors hover:bg-emerald-400/25">
+                          Accept
+                        </button>
+                        <button onClick={() => handleReject(r.id)}
+                          className="rounded-lg bg-[var(--color-accent-crimson)]/15 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[var(--color-accent-crimson)] transition-colors hover:bg-[var(--color-accent-crimson)]/25">
+                          Reject
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--color-surface)]/40 p-5">
               <div className="mb-4 flex items-center gap-2"><Shield size={14} className="text-[var(--text-muted)]" /><h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">Match Rules</h4></div>
               <ul className="flex flex-col gap-3">

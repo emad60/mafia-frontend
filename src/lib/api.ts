@@ -70,7 +70,7 @@ export interface AddMemberResponse {
 export const api = {
   /* ── Auth ── */
   login: (username: string, password: string) =>
-    request<TokenResponse>('/api/accounts/token/', {
+    request<TokenResponse>('/api/accounts/login/', {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     }),
@@ -101,6 +101,11 @@ export const api = {
       headers: authHeader(token),
     }),
 
+  getCredentials: (code: string, token: string) =>
+    request<{ participant_id: string; token: string }>(`/api/rooms/${code}/credentials/`, {
+      headers: authHeader(token),
+    }),
+
   getMembers: (code: string, token: string) =>
     request<MemberListResponse>(`/api/rooms/${code}/members/`, {
       headers: authHeader(token),
@@ -122,4 +127,27 @@ export const api = {
         headers: authHeader(token),
       },
     ),
+
+  getCredentials: (code: string, token: string) =>
+    request<{ participant_id: string; token: string }>(`/api/rooms/${code}/credentials/`, {
+      headers: authHeader(token),
+    }),
+
+  getJoinRequests: (code: string, token: string) =>
+    request<{ count: number; results: { id: number; user_id: number; username: string; status: string; requested_at: string }[] }>(
+      `/api/rooms/${code}/join-requests/`,
+      { headers: authHeader(token) },
+    ),
+
+  acceptJoinRequest: (code: string, requestId: number, token: string) =>
+    request<RoomResponse>(`/api/rooms/${code}/join-requests/${requestId}/accept/`, {
+      method: 'POST',
+      headers: authHeader(token),
+    }),
+
+  rejectJoinRequest: (code: string, requestId: number, token: string) =>
+    request<{ status: string }>(`/api/rooms/${code}/join-requests/${requestId}/reject/`, {
+      method: 'POST',
+      headers: authHeader(token),
+    }),
 }

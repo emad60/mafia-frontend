@@ -124,12 +124,49 @@ export interface RoomVoteCastPayload {
   target_id: number
 }
 
+export interface RoomStatePayload {
+  type: 'room_state'
+  room: { code: string; name: string; status: string; host: { id: number; username: string }; max_members: number; role_configuration?: Record<string, boolean>; scheduled_at?: string | null }
+  members: { id: number; username: string; joined_at?: string; is_host: boolean }[]
+  member_count: number
+}
+
+export interface HostChangedPayload {
+  type: 'host_changed'
+  previous_host_id: number; previous_host_username: string
+  new_host_id: number; new_host_username: string; reason: string
+}
+
+export interface ChatMessagePayload {  // v2: renamed from "chat" to "chat_message"
+  type: 'chat_message'
+  user_id: number; username: string; message: string
+}
+
+export interface JoinRequestReceivedPayload {
+  type: 'join_request_received'
+  request_id: number; user_id: number; username: string
+}
+
+export interface RoomClosedPayload {
+  type: 'room_closed'; room_code: string
+}
+
+export interface MemberRemovedPayload {
+  type: 'member_removed'; room_code: string
+}
+
 export type RoomServerMessage =
+  | RoomStatePayload
   | RoomPlayerJoinedPayload
   | RoomPlayerLeftPayload
   | RoomChatPayload
+  | ChatMessagePayload
   | RoomGameStartedPayload
   | RoomVoteCastPayload
+  | HostChangedPayload
+  | JoinRequestReceivedPayload
+  | RoomClosedPayload
+  | MemberRemovedPayload
 
 export type RoomClientMessage =
   | { type: 'chat'; message: string }
